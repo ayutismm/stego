@@ -15,8 +15,19 @@ try:
     HAS_SOUNDDEVICE = True
 except ImportError:
     HAS_SOUNDDEVICE = False
+
+# Matplotlib for visualization
+try:
+    import matplotlib
+    matplotlib.use('TkAgg')
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.figure import Figure
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
     
 from scipy.io.wavfile import write as wav_write, read as wav_read
+from scipy import signal as scipy_signal
 
 # Default parameters
 DEFAULT_F0 = 17000
@@ -35,7 +46,7 @@ class BFSKApp:
     def __init__(self, root):
         self.root = root
         self.root.title("BFSK Acoustic Communication")
-        self.root.geometry("700x600")
+        self.root.geometry("900x800")
         self.root.resizable(True, True)
         
         # Style configuration
@@ -164,6 +175,42 @@ class BFSKApp:
         scrollbar = ttk.Scrollbar(self.log_text, command=self.log_text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=scrollbar.set)
+        
+        # ===== VISUALIZATION =====
+        if HAS_MATPLOTLIB:
+            viz_frame = ttk.LabelFrame(main_frame, text="Audio Visualization", padding="5")
+            viz_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+            
+            # Create matplotlib figure with two subplots
+            self.fig = Figure(figsize=(8, 3), dpi=100)
+            self.fig.patch.set_facecolor('#2b2b2b')
+            
+            # Waveform subplot
+            self.ax_wave = self.fig.add_subplot(121)
+            self.ax_wave.set_facecolor('#1e1e1e')
+            self.ax_wave.set_title('Waveform', color='white', fontsize=10)
+            self.ax_wave.set_xlabel('Time (s)', color='#aaa', fontsize=8)
+            self.ax_wave.set_ylabel('Amplitude', color='#aaa', fontsize=8)
+            self.ax_wave.tick_params(colors='#888', labelsize=7)
+            for spine in self.ax_wave.spines.values():
+                spine.set_color('#444')
+            
+            # Spectrogram subplot
+            self.ax_spec = self.fig.add_subplot(122)
+            self.ax_spec.set_facecolor('#1e1e1e')
+            self.ax_spec.set_title('Spectrogram', color='white', fontsize=10)
+            self.ax_spec.set_xlabel('Time (s)', color='#aaa', fontsize=8)
+            self.ax_spec.set_ylabel('Frequency (kHz)', color='#aaa', fontsize=8)
+            self.ax_spec.tick_params(colors='#888', labelsize=7)
+            for spine in self.ax_spec.spines.values():
+                spine.set_color('#444')
+            
+            self.fig.tight_layout()
+            
+            # Embed in tkinter
+            self.canvas = FigureCanvasTkAgg(self.fig, master=viz_frame)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
     
     def log(self, message):
         self.log_text.insert(tk.END, message + "\n")
@@ -380,6 +427,8 @@ class BFSKApp:
                     sd.wait()
                     self.recorded_signal = self.recorded_signal[:, 0]
                     self.log("[INFO] Recording complete")
+                    # Update visualization on main thread
+                    self.root.after(0, lambda: self.update_visualization(self.recorded_signal, params['fs']))
                 except Exception as e:
                     self.log(f"[ERROR] {e}")
                 finally:
@@ -412,8 +461,88 @@ class BFSKApp:
                 self.recorded_signal = data
                 self.log(f"[INFO] Loaded: {filepath}")
                 self.log(f"[INFO] {len(data)} samples, {len(data)/fs:.2f}s")
+                self.update_visualization(data, fs)
             except Exception as e:
                 messagebox.showerror("Error", str(e))
+    
+    def update_visualization(self, signal, fs):
+        """Update waveform and spectrogram displays."""
+        if not HAS_MATPLOTLIB:
+            self.log("[WARN] Matplotlib not available for visualization")
+            return
+        
+        if not hasattr(self, 'ax_wave') or not hasattr(self, 'ax_spec'):
+            self.log("[WARN] Visualization axes not initialized")
+            return
+        
+        self.log("[INFO] Updating visualization...")
+        
+        try:
+            # Clear previous plots
+            self.ax_wave.clear()
+            self.ax_spec.clear()
+            
+            # Waveform
+            duration = len(signal) / fs
+            time_axis = np.linspace(0, duration, len(signal))
+            
+            # Downsample for display if too many points
+            max_points = 10000
+            if len(signal) > max_points:
+                step = len(signal) // max_points
+                time_display = time_axis[::step]
+                signal_display = signal[::step]
+            else:
+                time_display = time_axis
+                signal_display = signal
+            
+            self.ax_wave.plot(time_display, signal_display, color='#00ff88', linewidth=0.5)
+            self.ax_wave.set_title('Waveform', color='white', fontsize=10)
+            self.ax_wave.set_xlabel('Time (s)', color='#aaa', fontsize=8)
+            self.ax_wave.set_ylabel('Amplitude', color='#aaa', fontsize=8)
+            self.ax_wave.set_facecolor('#1e1e1e')
+            self.ax_wave.tick_params(colors='#888', labelsize=7)
+            self.ax_wave.set_xlim(0, duration)
+            for spine in self.ax_wave.spines.values():
+                spine.set_color('#444')
+            
+            # Mark F0 and F1 frequency bands
+            f0 = float(self.f0_var.get())
+            f1 = float(self.f1_var.get())
+            
+            # Spectrogram
+            nperseg = min(1024, len(signal) // 4)
+            if nperseg > 0:
+                f, t, Sxx = scipy_signal.spectrogram(signal, fs, nperseg=nperseg, noverlap=nperseg//2)
+                
+                # Focus on frequency range around F0 and F1
+                freq_mask = (f >= 0) & (f <= 25000)  # Up to 25kHz
+                f_display = f[freq_mask] / 1000  # Convert to kHz
+                Sxx_display = Sxx[freq_mask, :]
+                
+                # Log scale for better visualization
+                Sxx_db = 10 * np.log10(Sxx_display + 1e-10)
+                
+                self.ax_spec.pcolormesh(t, f_display, Sxx_db, shading='gouraud', cmap='viridis')
+                
+                # Mark target frequencies
+                self.ax_spec.axhline(y=f0/1000, color='#ff4444', linestyle='--', linewidth=1, alpha=0.7, label=f'F0={f0/1000:.1f}kHz')
+                self.ax_spec.axhline(y=f1/1000, color='#44ff44', linestyle='--', linewidth=1, alpha=0.7, label=f'F1={f1/1000:.1f}kHz')
+                self.ax_spec.legend(loc='upper right', fontsize=7, facecolor='#2b2b2b', edgecolor='#444', labelcolor='white')
+            
+            self.ax_spec.set_title('Spectrogram', color='white', fontsize=10)
+            self.ax_spec.set_xlabel('Time (s)', color='#aaa', fontsize=8)
+            self.ax_spec.set_ylabel('Frequency (kHz)', color='#aaa', fontsize=8)
+            self.ax_spec.set_facecolor('#1e1e1e')
+            self.ax_spec.tick_params(colors='#888', labelsize=7)
+            for spine in self.ax_spec.spines.values():
+                spine.set_color('#444')
+            
+            self.fig.tight_layout()
+            self.canvas.draw()
+            
+        except Exception as e:
+            self.log(f"[WARN] Visualization error: {e}")
     
     def demodulate_fsk(self, signal, params):
         """Demodulate FSK signal."""
