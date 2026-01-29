@@ -16,8 +16,12 @@ DEFAULT_F0 = 17000       # Frequency for bit '0' (Hz)
 DEFAULT_F1 = 18500       # Frequency for bit '1' (Hz)
 DEFAULT_BIT_DURATION = 0.08  # 80ms per bit
 DEFAULT_SAMPLE_RATE = 44100  # 44.1 kHz
+DEFAULT_REPEAT = 1       # Bit repetition factor
 
-START_FLAG = "10101010"
+# Preamble: alternating pattern for receiver sync
+PREAMBLE = "10101010101010101010101010101010"  # 32 bits
+# START_FLAG must be distinct from preamble pattern
+START_FLAG = "11001100"  # Different from alternating 10101010
 END_FLAG = "11111111"
 
 
@@ -78,8 +82,8 @@ def build_packet(unit_id: int, payload: str) -> str:
     checksum = compute_checksum(payload_bytes)
     checksum_bits = format(checksum, '08b')
     
-    # Assemble packet
-    packet = START_FLAG + unit_bits + length_bits + payload_bits + checksum_bits + END_FLAG
+    # Assemble packet (preamble + packet)
+    packet = PREAMBLE + START_FLAG + unit_bits + length_bits + payload_bits + checksum_bits + END_FLAG
     
     return packet
 
@@ -103,8 +107,8 @@ def build_auth_packet(unit_id: int, secret: str) -> str:
     checksum = compute_checksum(token_bytes)
     checksum_bits = format(checksum, '08b')
     
-    # Assemble packet
-    packet = START_FLAG + unit_bits + token_bits + checksum_bits + END_FLAG
+    # Assemble packet (preamble + packet)
+    packet = PREAMBLE + START_FLAG + unit_bits + token_bits + checksum_bits + END_FLAG
     
     return packet
 
@@ -144,6 +148,8 @@ Examples:
                         help=f'Bit duration in seconds (default: {DEFAULT_BIT_DURATION})')
     parser.add_argument('--sample-rate', type=int, default=DEFAULT_SAMPLE_RATE,
                         help=f'Sample rate (default: {DEFAULT_SAMPLE_RATE} Hz)')
+    parser.add_argument('--repeat', type=int, default=DEFAULT_REPEAT,
+                        help=f'Repeat each bit N times for noise resistance (default: {DEFAULT_REPEAT})')
     
     args = parser.parse_args()
     
@@ -163,7 +169,12 @@ Examples:
         print(f"[DATA MODE] Unit ID: {args.unit_id}")
         print(f"[DATA MODE] Payload: {args.data}")
     
-    print(f"[INFO] Packet length: {len(packet)} bits")
+    # Apply bit repetition if requested
+    if args.repeat > 1:
+        packet = ''.join(bit * args.repeat for bit in packet)
+        print(f"[INFO] Bit repetition: {args.repeat}x")
+    
+    print(f"[INFO] Packet length: {len(packet)} bits (including preamble)")
     print(f"[INFO] Frequencies: f0={args.f0} Hz, f1={args.f1} Hz")
     print(f"[INFO] Bit duration: {args.bit_duration * 1000:.0f} ms")
     print(f"[INFO] Total TX time: {len(packet) * args.bit_duration:.2f} seconds")

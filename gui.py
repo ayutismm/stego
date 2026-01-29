@@ -23,8 +23,11 @@ DEFAULT_F0 = 17000
 DEFAULT_F1 = 18500
 DEFAULT_BIT_DURATION = 0.08
 DEFAULT_SAMPLE_RATE = 44100
+DEFAULT_REPEAT = 1
 
-START_FLAG = "10101010"
+# Preamble and flags
+PREAMBLE = "10101010101010101010101010101010"  # 32 bits
+START_FLAG = "11001100"  # Distinct from preamble
 END_FLAG = "11111111"
 
 
@@ -92,6 +95,11 @@ class BFSKApp:
         ttk.Label(param_frame, text="Bit Duration (s):").grid(row=0, column=4, sticky=tk.W, padx=5)
         self.bit_duration_var = tk.StringVar(value=str(DEFAULT_BIT_DURATION))
         ttk.Entry(param_frame, textvariable=self.bit_duration_var, width=10).grid(row=0, column=5, padx=5)
+        
+        # Row 2 - Repeat factor
+        ttk.Label(param_frame, text="Repeat (noise):").grid(row=1, column=0, sticky=tk.W, padx=5)
+        self.repeat_var = tk.StringVar(value=str(DEFAULT_REPEAT))
+        ttk.Entry(param_frame, textvariable=self.repeat_var, width=10).grid(row=1, column=1, padx=5)
         
         # ===== SENDER SECTION =====
         sender_frame = ttk.LabelFrame(main_frame, text="Sender", padding="10")
@@ -262,7 +270,15 @@ class BFSKApp:
         checksum = sum(data_bytes) % 256
         checksum_bits = format(checksum, '08b')
         
-        return START_FLAG + unit_bits + payload_bits + checksum_bits + END_FLAG
+        # Build packet with preamble
+        packet = PREAMBLE + START_FLAG + unit_bits + payload_bits + checksum_bits + END_FLAG
+        
+        # Apply bit repetition if requested
+        repeat = int(self.repeat_var.get())
+        if repeat > 1:
+            packet = ''.join(bit * repeat for bit in packet)
+        
+        return packet
     
     def generate_wav(self):
         """Generate and save WAV file."""
@@ -432,8 +448,24 @@ class BFSKApp:
             params = self.get_params()
             bitstream = self.demodulate_fsk(self.recorded_signal, params)
             
-            # Find start
-            start_idx = bitstream.find(START_FLAG)
+            # Apply majority voting if repeat > 1
+            repeat = int(self.repeat_var.get())
+            if repeat > 1:
+                voted = []
+                for i in range(0, len(bitstream), repeat):
+                    group = bitstream[i:i+repeat]
+                    ones = group.count('1')
+                    zeros = group.count('0')
+                    voted.append('1' if ones > zeros else '0')
+                bitstream = ''.join(voted)
+                self.log(f"[INFO] Applied majority voting (repeat={repeat})")
+            
+            # Find start (skip preamble region)
+            preamble_bits = 32 // repeat if repeat > 1 else 32
+            search_start = max(0, preamble_bits - 8)
+            start_idx = bitstream.find(START_FLAG, search_start)
+            if start_idx < 0:
+                start_idx = bitstream.find(START_FLAG)
             if start_idx < 0:
                 self.log("[ERROR] START flag not found")
                 return

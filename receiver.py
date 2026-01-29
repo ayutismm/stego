@@ -25,8 +25,10 @@ DEFAULT_F0 = 17000
 DEFAULT_F1 = 18500
 DEFAULT_BIT_DURATION = 0.08
 DEFAULT_SAMPLE_RATE = 44100
+DEFAULT_REPEAT = 1
+DEFAULT_ENERGY_THRESHOLD = 0.01  # Minimum signal energy to decode
 
-START_FLAG = "10101010"
+START_FLAG = "11001100"  # Distinct from alternating preamble
 END_FLAG = "11111111"
 
 
@@ -46,11 +48,13 @@ def bits_to_bytes(bits: str) -> bytes:
 
 
 def demodulate_fsk(signal: np.ndarray, f0: float, f1: float,
-                   bit_duration: float, fs: int) -> str:
+                   bit_duration: float, fs: int, 
+                   energy_threshold: float = DEFAULT_ENERGY_THRESHOLD) -> str:
     """
-    Demodulate FSK signal using FFT.
+    Demodulate FSK signal using FFT with energy threshold.
     
     Splits signal into bit-length windows and compares energy at f0 vs f1.
+    Windows below energy threshold are marked as '?' (uncertain).
     """
     samples_per_bit = int(bit_duration * fs)
     num_bits = len(signal) // samples_per_bit
@@ -62,12 +66,18 @@ def demodulate_fsk(signal: np.ndarray, f0: float, f1: float,
         end = start + samples_per_bit
         window = signal[start:end]
         
+        # Check energy threshold
+        window_energy = np.mean(window ** 2)
+        if window_energy < energy_threshold:
+            bitstream.append('?')  # Uncertain bit
+            continue
+        
         # Apply Hanning window to reduce spectral leakage
-        window = window * np.hanning(len(window))
+        windowed = window * np.hanning(len(window))
         
         # Compute FFT
-        N = len(window)
-        spectrum = np.fft.fft(window)
+        N = len(windowed)
+        spectrum = np.fft.fft(windowed)
         freqs = np.fft.fftfreq(N, 1/fs)
         magnitudes = np.abs(spectrum)
         
@@ -85,10 +95,52 @@ def demodulate_fsk(signal: np.ndarray, f0: float, f1: float,
     return ''.join(bitstream)
 
 
-def find_packet_start(bitstream: str) -> int:
-    """Find the START flag in the bitstream."""
-    idx = bitstream.find(START_FLAG)
-    return idx
+def apply_majority_voting(bitstream: str, repeat: int) -> str:
+    """
+    Apply majority voting to decode repeated bits.
+    
+    If sender used --repeat N, each logical bit is transmitted N times.
+    Take the majority vote of each group of N bits.
+    """
+    if repeat <= 1:
+        return bitstream
+    
+    result = []
+    for i in range(0, len(bitstream), repeat):
+        group = bitstream[i:i+repeat]
+        # Count 0s and 1s (ignore uncertain '?')
+        zeros = group.count('0')
+        ones = group.count('1')
+        
+        if ones > zeros:
+            result.append('1')
+        elif zeros > ones:
+            result.append('0')
+        else:
+            # Tie or all uncertain - default to 0
+            result.append('0')
+    
+    return ''.join(result)
+
+
+def find_packet_start(bitstream: str, preamble_bits: int = 32) -> int:
+    """
+    Find the START flag in the bitstream, skipping preamble.
+    
+    The preamble is 32 alternating bits (10101010...) which also contains
+    the START pattern. We search for START after the preamble region,
+    or fall back to the last occurrence if multiple matches exist.
+    """
+    # First, try to find START after preamble
+    search_start = max(0, preamble_bits - 8)  # Allow some tolerance
+    idx = bitstream.find(START_FLAG, search_start)
+    
+    if idx >= 0:
+        return idx
+    
+    # Fallback: find any occurrence
+    return bitstream.find(START_FLAG)
+
 
 
 def parse_data_packet(bitstream: str, start_idx: int) -> dict:
@@ -262,6 +314,10 @@ Examples:
                         help=f'Bit duration in seconds (default: {DEFAULT_BIT_DURATION})')
     parser.add_argument('--sample-rate', type=int, default=DEFAULT_SAMPLE_RATE,
                         help=f'Sample rate (default: {DEFAULT_SAMPLE_RATE} Hz)')
+    parser.add_argument('--repeat', type=int, default=DEFAULT_REPEAT,
+                        help=f'Bit repetition factor used by sender (default: {DEFAULT_REPEAT})')
+    parser.add_argument('--energy-threshold', type=float, default=DEFAULT_ENERGY_THRESHOLD,
+                        help=f'Min signal energy to decode (default: {DEFAULT_ENERGY_THRESHOLD})')
     parser.add_argument('--verbose', action='store_true',
                         help='Show decoded bitstream')
     
@@ -281,13 +337,20 @@ Examples:
     
     # Demodulate
     bitstream = demodulate_fsk(signal, args.f0, args.f1, 
-                               args.bit_duration, args.sample_rate)
+                               args.bit_duration, args.sample_rate,
+                               args.energy_threshold)
+    
+    # Apply majority voting if bit repetition was used
+    if args.repeat > 1:
+        bitstream = apply_majority_voting(bitstream, args.repeat)
+        print(f"[INFO] Applied majority voting (repeat={args.repeat})")
     
     if args.verbose:
         print(f"[DEBUG] Bitstream ({len(bitstream)} bits): {bitstream}")
     
-    # Find packet start
-    start_idx = find_packet_start(bitstream)
+    # Find packet start (preamble is 32 bits, scaled by repeat factor)
+    preamble_bits = 32 // args.repeat if args.repeat > 1 else 32
+    start_idx = find_packet_start(bitstream, preamble_bits)
     
     if start_idx < 0:
         print("[ERROR] START flag not found in signal")
