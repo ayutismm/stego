@@ -1,0 +1,1476 @@
+================================================================================
+    BFSK ACOUSTIC COMMUNICATION SYSTEM - TOPICS, THEORY & CONCEPTS
+================================================================================
+
+This document covers all the technical topics, theories, and concepts used in
+the BFSK (Binary Frequency-Shift Keying) Acoustic Communication System project.
+It serves as a comprehensive reference for understanding the underlying
+principles of digital communication, signal processing, cryptography, and
+audio engineering that make this system work.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+1.  Digital Modulation Fundamentals
+2.  Frequency-Shift Keying (FSK)
+3.  Continuous-Phase FSK (CPFSK)
+4.  Signal Processing Concepts
+5.  Fast Fourier Transform (FFT)
+6.  Audio Engineering Concepts
+7.  Packet-Based Communication Protocols
+8.  Error Detection & Checksums
+9.  Cryptographic Hashing (SHA-256)
+10. Acoustic Communication & Near-Ultrasonic Transmission
+11. Noise Resistance Techniques
+12. AES-256-GCM Payload Encryption
+13. Python Libraries & Implementation
+14. Key Formulas & Calculations
+15. Security Analysis
+16. References & Further Reading
+
+================================================================================
+1. DIGITAL MODULATION FUNDAMENTALS
+================================================================================
+
+What is Modulation?
+-------------------
+Modulation is the fundamental process of encoding information onto a carrier
+signal for transmission. In the context of digital communication, modulation
+converts discrete binary data (sequences of 0s and 1s) into analog waveforms
+suitable for transmission through a physical medium.
+
+The Basic Communication Model:
+------------------------------
+    Source → Encoder → Modulator → Channel → Demodulator → Decoder → Sink
+    
+    - Source: Original data (text, authentication token)
+    - Encoder: Converts data to binary bitstream
+    - Modulator: Converts bits to analog waveform
+    - Channel: Transmission medium (air, for acoustic)
+    - Demodulator: Recovers bits from received waveform
+    - Decoder: Reconstructs original data
+
+Types of Digital Modulation:
+----------------------------
+1. Amplitude Shift Keying (ASK):
+   - Varies the amplitude of the carrier to represent data
+   - Simple but susceptible to noise and amplitude variations
+   - Example: AM radio
+
+2. Frequency Shift Keying (FSK):
+   - Varies the frequency of the carrier to represent data
+   - More robust against amplitude noise
+   - Used in modems, RFID, and this project
+
+3. Phase Shift Keying (PSK):
+   - Varies the phase of the carrier to represent data
+   - More bandwidth efficient than FSK
+   - Examples: BPSK, QPSK, used in WiFi and satellite
+
+4. Quadrature Amplitude Modulation (QAM):
+   - Combines amplitude and phase modulation
+   - Very bandwidth efficient
+   - Used in modern high-speed communications
+
+Why FSK for Acoustic Communication?
+-----------------------------------
+FSK was chosen for this project for several compelling reasons:
+
+1. Noise Immunity:
+   - Amplitude variations from speaker/microphone differences don't affect FSK
+   - Only frequency matters, not signal strength
+   - Robust against volume changes during transmission
+
+2. Simplicity:
+   - Easy to generate (just switch between two sine waves)
+   - Easy to detect (compare energy at two frequencies)
+   - No complex synchronization requirements
+
+3. Audio Compatibility:
+   - Works naturally with audio hardware
+   - Frequencies map directly to audible/ultrasonic range
+   - Standard audio equipment can transmit and receive
+
+4. Interference Resistance:
+   - Most ambient noise is broadband or low-frequency
+   - Using high frequencies (17-18.5 kHz) avoids most interference
+   - Narrow bandwidth reduces collision chance
+
+Bandwidth Considerations:
+-------------------------
+The bandwidth of an FSK signal depends on:
+  BW ≈ 2 × (frequency separation + bit rate)
+  BW ≈ 2 × (1500 + 12.5) = 3025 Hz
+
+This fits comfortably within the audio spectrum.
+
+================================================================================
+2. FREQUENCY-SHIFT KEYING (FSK)
+================================================================================
+
+Definition and Principle:
+-------------------------
+Frequency-Shift Keying (FSK) is a frequency modulation scheme where digital
+information is transmitted by discrete frequency changes of a carrier signal.
+In Binary FSK (BFSK), two frequencies represent the two binary states:
+
+    Bit '0' → Frequency f0 = 17000 Hz
+    Bit '1' → Frequency f1 = 18500 Hz
+
+Mathematical Representation:
+----------------------------
+For a single bit 'b' transmitted during time interval [0, T_bit]:
+
+    s(t) = A × sin(2π × f_b × t + φ)
+
+Where:
+    A    = amplitude (constant, typically 1.0)
+    f_b  = f0 if bit is '0', f1 if bit is '1'
+    t    = time variable
+    φ    = phase offset
+    T_bit = bit duration (80 ms in this project)
+
+For a sequence of bits b[0], b[1], b[2], ..., the signal becomes:
+
+    s(t) = A × sin(2π × f_{b[i]} × t + φ_i)
+    
+    where i = floor(t / T_bit)
+
+Project-Specific Parameters:
+----------------------------
+Parameter         | Value      | Rationale
+------------------|------------|------------------------------------------
+f0 (bit '0')      | 17000 Hz   | Near-ultrasonic, barely audible
+f1 (bit '1')      | 18500 Hz   | 1500 Hz above f0 for reliable detection
+Bit Duration      | 80 ms      | Balance between speed and reliability
+Sample Rate       | 44100 Hz   | CD quality, wide hardware support
+Frequency Gap     | 1500 Hz    | Large enough for FFT discrimination
+
+Frequency Separation Analysis:
+------------------------------
+The choice of 1500 Hz separation is critical:
+
+1. Too Small (<500 Hz):
+   - FFT bins may overlap
+   - Hard to distinguish f0 from f1
+   - Noise more likely to cause bit errors
+
+2. Too Large (>5000 Hz):
+   - Wastes available bandwidth
+   - Larger frequency jumps = more spectral spreading
+   - May exceed speaker frequency response
+
+3. 1500 Hz (chosen):
+   - At least 12 FFT bins separation (at 12.5 Hz/bin)
+   - Clear discrimination even with noise
+   - Both frequencies within speaker capability
+
+Symbol Rate and Bit Rate:
+-------------------------
+In BFSK, each symbol represents one bit:
+
+    Symbol Rate = Bit Rate = 1 / T_bit
+                = 1 / 0.08
+                = 12.5 symbols/second = 12.5 bps
+
+This is slow by modern standards, but appropriate for:
+    - Acoustic transmission through air
+    - Consumer-grade audio hardware
+    - Noisy environments
+
+Data Rate Examples:
+-------------------
+Message "Hello" (5 bytes = 40 bits):
+    - Data bits: 40
+    - Packet overhead: ~40 bits (preamble, flags, checksum)
+    - Total bits: ~80
+    - Time: 80 × 0.08 = 6.4 seconds
+
+Authentication token (32 bits):
+    - Total with overhead: ~92 bits
+    - Time: 92 × 0.08 = 7.36 seconds
+
+================================================================================
+3. CONTINUOUS-PHASE FSK (CPFSK)
+================================================================================
+
+The Problem with Standard (Discontinuous) FSK:
+----------------------------------------------
+In basic FSK, each bit is generated independently:
+
+    # Standard FSK (problematic)
+    for each bit:
+        if bit == '1':
+            generate: sin(2π × f1 × t)  # Starts at phase 0
+        else:
+            generate: sin(2π × f0 × t)  # Starts at phase 0
+
+This causes phase discontinuities at bit boundaries:
+
+         Bit 0 (f0)        |   Bit 1 (f1)
+                          ↓ Phase jump!
+    ∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿|∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿
+    End phase ≠ Start phase of next bit
+
+Problems caused by discontinuities:
+1. Audible "clicks" or "pops" in audio
+2. Spectral spreading (wider bandwidth)
+3. Increased high-frequency noise
+4. Harder demodulation (spurious frequency content)
+
+CPFSK Solution - Phase Continuity:
+----------------------------------
+CPFSK maintains a running phase variable that accumulates continuously:
+
+    # Continuous-Phase FSK (smooth)
+    phase = 0.0
+    for each bit:
+        freq = f1 if bit == '1' else f0
+        for each sample:
+            signal[sample] = sin(phase)
+            phase += 2π × freq / sample_rate
+            if phase > 2π:
+                phase -= 2π  # Keep bounded
+
+Visualization:
+
+         Bit 0 (f0)        |   Bit 1 (f1)
+                          ↓ Smooth transition!
+    ∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿
+    Phase continues from previous value
+
+Mathematical Formulation:
+-------------------------
+The instantaneous phase at time t is:
+
+    φ(t) = 2π ∫[0 to t] f(τ) dτ
+
+Where f(τ) is the instantaneous frequency (either f0 or f1).
+
+For discrete samples at sample rate fs:
+
+    φ[n] = φ[n-1] + (2π × f_current) / fs
+
+Implementation Details:
+-----------------------
+def generate_cpfsk(bitstream, f0, f1, bit_duration, fs):
+    samples_per_bit = int(bit_duration * fs)
+    total_samples = len(bitstream) * samples_per_bit
+    signal = np.zeros(total_samples)
+    phase = 0.0
+    
+    for i, bit in enumerate(bitstream):
+        freq = f1 if bit == '1' else f0
+        start_idx = i * samples_per_bit
+        
+        for j in range(samples_per_bit):
+            signal[start_idx + j] = np.sin(phase)
+            phase += 2 * np.pi * freq / fs
+            # Keep phase bounded to prevent numerical overflow
+            if phase > 2 * np.pi:
+                phase -= 2 * np.pi
+    
+    return signal
+
+Benefits of CPFSK:
+------------------
+1. Spectral Efficiency:
+   - Narrower bandwidth (no spurious components)
+   - Less interference with adjacent frequencies
+
+2. Audio Quality:
+   - No clicks or pops
+   - Sounds like smooth frequency sweeping
+
+3. Demodulation:
+   - Cleaner FFT spectrum
+   - More reliable bit detection
+
+4. Hardware Friendly:
+   - Gentler on speakers (no sudden impulses)
+   - Better for low-quality audio equipment
+
+Phase Wrapping Explanation:
+---------------------------
+Why keep phase bounded (phase -= 2π when phase > 2π)?
+
+- sin(phase) repeats every 2π
+- Unbounded phase would grow to very large numbers
+- Large floats lose precision (floating-point errors)
+- Could cause numerical instability over long transmissions
+- After k bits: phase could be 2π × f × k × T_bit = millions of radians
+
+================================================================================
+4. SIGNAL PROCESSING CONCEPTS
+================================================================================
+
+Sampling Theory (Nyquist-Shannon Theorem):
+------------------------------------------
+The foundation of digital audio and signal processing.
+
+Theorem Statement:
+A band-limited continuous signal can be perfectly reconstructed from its
+samples if the sampling rate is at least twice the highest frequency component.
+
+    fs ≥ 2 × f_max    (Nyquist criterion)
+
+Where:
+    fs    = sampling frequency (Hz)
+    f_max = highest frequency in signal (Hz)
+
+For this project:
+    fs = 44100 Hz
+    f_max = f1 = 18500 Hz
+    Required: fs ≥ 37000 Hz ✓ (44100 > 37000)
+
+Aliasing:
+---------
+If Nyquist criterion is violated (fs < 2 × f_max), aliasing occurs:
+- High frequencies "fold back" into lower frequencies
+- Creates phantom frequencies that weren't in original signal
+- Irreversible corruption
+
+Example:
+    Signal at 20000 Hz sampled at 30000 Hz
+    Alias appears at: 30000 - 20000 = 10000 Hz (wrong!)
+
+Samples Per Bit Calculation:
+----------------------------
+The number of samples used to represent each bit:
+
+    samples_per_bit = bit_duration × sample_rate
+                    = 0.08 s × 44100 samples/s
+                    = 3528 samples
+
+More samples per bit = better frequency resolution in FFT
+                     = but slower data rate
+
+Windowing Functions:
+--------------------
+Before applying FFT, we use a window function to reduce spectral leakage.
+
+The Problem (without windowing):
+- FFT assumes the signal is periodic
+- A finite signal chunk has discontinuities at edges
+- These discontinuities create artificial frequency content
+
+The Solution - Hanning Window:
+- Smoothly tapers signal to zero at edges
+- Reduces edge discontinuities
+- Trades off frequency resolution for reduced leakage
+
+Hanning Window Formula:
+    w[n] = 0.5 × (1 - cos(2πn / (N-1)))
+    
+    Where:
+        n = sample index (0 to N-1)
+        N = total samples in window
+
+Application:
+    windowed_signal = original_signal × hanning_window
+
+Visual comparison:
+    
+    Without window:        With Hanning window:
+    ┌────────────┐        ╭──────────────╮
+    │            │        │               │
+    │            │       ╱                 ╲
+    └────────────┘      ╱                   ╲
+    Sharp edges         Smooth taper to zero
+
+Other Window Types (not used in project):
+- Hamming: Similar to Hanning, slightly different coefficients
+- Blackman: Even less leakage, but wider main lobe
+- Kaiser: Configurable trade-off between resolution and leakage
+- Rectangular: No windowing (worst leakage)
+
+Energy Threshold Detection:
+---------------------------
+To distinguish signal from silence/noise, we compute signal energy:
+
+    window_energy = mean(window²) = (1/N) × Σ(x[n]²)
+
+Decision logic:
+    if window_energy < threshold:
+        bit = '?'  (uncertain, too quiet)
+    else:
+        analyze frequency content
+
+Default threshold: 0.01 (normalized signal from -1 to +1)
+
+Why energy threshold matters:
+- Prevents false positives during silence
+- Handles variable recording levels
+- Marks questionable bits for special handling
+
+================================================================================
+5. FAST FOURIER TRANSFORM (FFT)
+================================================================================
+
+What is the Fourier Transform?
+------------------------------
+The Fourier Transform decomposes a signal into its constituent frequencies.
+Any signal can be represented as a sum of sinusoids at different frequencies.
+
+Time Domain vs. Frequency Domain:
+    
+    Time Domain:              Frequency Domain:
+    (amplitude vs. time)      (amplitude vs. frequency)
+    
+    ∿∿∿∿∿∿∿∿∿∿∿∿             │    │
+    Mixed signal              │  │ │  │
+                              │  │ │  │
+                              └──┴─┴──┴──→ freq
+                                 f0 f1
+
+Discrete Fourier Transform (DFT):
+---------------------------------
+For discrete (sampled) signals, we use the DFT:
+
+    X[k] = Σ(n=0 to N-1) x[n] × e^(-j2πkn/N)
+
+Where:
+    x[n] = input signal samples (time domain)
+    X[k] = output frequency coefficients (frequency domain)
+    N    = number of samples
+    k    = frequency bin index (0 to N-1)
+    j    = imaginary unit (√-1)
+    e^(-j2πkn/N) = complex sinusoid (Euler's formula)
+
+Fast Fourier Transform (FFT):
+-----------------------------
+FFT is an efficient algorithm to compute DFT.
+
+Complexity comparison:
+    DFT:  O(N²) operations
+    FFT:  O(N log N) operations
+
+For N = 3528 samples:
+    DFT:  ~12 million operations
+    FFT:  ~41,000 operations (300× faster!)
+
+The FFT achieves this by exploiting symmetry and periodicity properties.
+
+Frequency Resolution:
+---------------------
+Each FFT bin represents a frequency range:
+
+    Δf = fs / N = sample_rate / samples
+       = 44100 / 3528
+       ≈ 12.5 Hz per bin
+
+Bin Frequencies:
+    Bin 0:   0 Hz (DC component)
+    Bin 1:   12.5 Hz
+    Bin 2:   25 Hz
+    ...
+    Bin k:   k × 12.5 Hz
+
+Finding f0 and f1 Bins:
+-----------------------
+To detect which frequency is present in a bit window:
+
+1. Compute bin index for each target frequency:
+    idx_f0 = round(f0 × N / fs) = round(17000 × 3528 / 44100) = 1360
+    idx_f1 = round(f1 × N / fs) = round(18500 × 3528 / 44100) = 1480
+
+2. Get magnitudes at those bins:
+    mag_f0 = |X[idx_f0]|
+    mag_f1 = |X[idx_f1]|
+
+3. Compare:
+    if mag_f1 > mag_f0:
+        bit = '1'
+    else:
+        bit = '0'
+
+Complex Numbers and Magnitude:
+------------------------------
+FFT output is complex: X[k] = real + j×imaginary
+
+Magnitude (what we care about):
+    |X[k]| = √(real² + imag²)
+
+Phase (not used in this project):
+    ∠X[k] = atan2(imag, real)
+
+Implementation:
+---------------
+def demodulate_bit(window, f0, f1, fs):
+    # Apply Hanning window
+    windowed = window * np.hanning(len(window))
+    
+    # Compute FFT
+    N = len(windowed)
+    spectrum = np.fft.fft(windowed)
+    magnitudes = np.abs(spectrum)
+    
+    # Find bins for target frequencies
+    idx_f0 = int(round(f0 * N / fs))
+    idx_f1 = int(round(f1 * N / fs))
+    
+    # Compare magnitudes
+    if magnitudes[idx_f1] > magnitudes[idx_f0]:
+        return '1'
+    else:
+        return '0'
+
+================================================================================
+6. AUDIO ENGINEERING CONCEPTS
+================================================================================
+
+Digital Audio Fundamentals:
+---------------------------
+Sound is a continuous analog phenomenon (pressure waves in air).
+Digital audio represents sound as a sequence of discrete numerical samples.
+
+Sampling: Measuring amplitude at regular intervals
+Quantization: Rounding amplitude to discrete levels
+
+Sample Rate (Sampling Frequency):
+---------------------------------
+The number of samples taken per second.
+
+Common sample rates:
+    8000 Hz   - Telephone quality
+    22050 Hz  - Low quality audio
+    44100 Hz  - CD quality (used in this project)
+    48000 Hz  - Professional audio/video
+    96000 Hz  - High-resolution audio
+    192000 Hz - Studio mastering
+
+44100 Hz origin:
+- Chosen for CD (1982) to allow 20 kHz audio (44100 > 2×20000)
+- Also mathematically convenient for video (44100 = 245 × 180)
+
+Bit Depth (Quantization):
+-------------------------
+Number of bits used to represent each sample's amplitude.
+
+8-bit:   256 levels,    ~48 dB dynamic range
+16-bit:  65536 levels,  ~96 dB dynamic range (used in project)
+24-bit:  16M levels,    ~144 dB dynamic range
+32-bit:  4B levels,     ~192 dB dynamic range (floating point)
+
+This project uses 16-bit PCM:
+- Each sample: integer from -32768 to +32767
+- Good balance of quality and file size
+- Universal hardware support
+
+PCM (Pulse Code Modulation):
+----------------------------
+The standard method of encoding digital audio.
+
+1. Sample the analog signal at regular intervals
+2. Quantize each sample to nearest discrete level
+3. Store/transmit the sequence of values
+
+WAV File Format:
+----------------
+Uncompressed audio format, widely supported.
+
+Structure:
+┌─────────────────────────────────────┐
+│ RIFF Header (12 bytes)              │
+│   - "RIFF" signature                │
+│   - File size                       │
+│   - "WAVE" format                   │
+├─────────────────────────────────────┤
+│ Format Chunk (24+ bytes)            │
+│   - "fmt " signature                │
+│   - Audio format (1 = PCM)          │
+│   - Number of channels              │
+│   - Sample rate                     │
+│   - Byte rate                       │
+│   - Block align                     │
+│   - Bits per sample                 │
+├─────────────────────────────────────┤
+│ Data Chunk (variable)               │
+│   - "data" signature                │
+│   - Chunk size                      │
+│   - Raw audio samples               │
+└─────────────────────────────────────┘
+
+File size calculation:
+    Size = Header + (samples × channels × bytes_per_sample)
+    
+    For 10 seconds mono 16-bit 44100 Hz:
+    = 44 + (10 × 44100 × 1 × 2)
+    = 44 + 882000
+    = 882044 bytes ≈ 861 KB
+
+Normalization:
+--------------
+Before saving, the signal is normalized to use full dynamic range:
+
+    # Normalize to [-1, 1]
+    signal_normalized = signal / max(|signal|)
+    
+    # Scale to 16-bit integer range
+    signal_int16 = (signal_normalized × 32767).astype(int16)
+
+Why normalize?
+- Prevents clipping (values exceeding max)
+- Maximizes signal-to-noise ratio
+- Consistent volume across different transmissions
+
+Audio Device Handling:
+----------------------
+The project uses sounddevice library for real-time audio:
+
+Recording:
+    recording = sd.rec(
+        int(duration * fs),   # Number of samples
+        samplerate=fs,        # Sample rate
+        channels=1,           # Mono
+        dtype='float64'       # Data type
+    )
+    sd.wait()  # Wait for recording to complete
+
+Playback:
+    sd.play(signal, samplerate=fs)
+    sd.wait()  # Wait for playback to complete
+
+================================================================================
+7. PACKET-BASED COMMUNICATION PROTOCOLS
+================================================================================
+
+Why Use Packets?
+----------------
+Packets provide structure to raw data transmission:
+
+1. Synchronization: Receiver knows where data begins/ends
+2. Metadata: Length, type, source identification
+3. Error Detection: Checksums verify data integrity
+4. Flexibility: Different packet types for different purposes
+
+This project defines three packet types:
+1. Data Mode: Transmit arbitrary text messages
+2. Auth Mode: Transmit authentication tokens
+3. Encrypted Mode: Transmit encrypted payloads
+
+Packet Structure - Data Mode:
+-----------------------------
+┌──────────┬───────────┬─────────┬────────┬─────────┬──────────┬──────┐
+│ PREAMBLE │ START_FLAG│ UNIT_ID │ LENGTH │ PAYLOAD │ CHECKSUM │ END  │
+│ 32 bits  │ 8 bits    │ 4 bits  │ 8 bits │ N×8 bits│ 8 bits   │8 bits│
+└──────────┴───────────┴─────────┴────────┴─────────┴──────────┴──────┘
+
+Total: 68 + N×8 bits (where N = message length in bytes)
+
+Packet Structure - Auth Mode:
+-----------------------------
+┌──────────┬───────────┬─────────┬───────────┬──────────┬──────┐
+│ PREAMBLE │ START_FLAG│ UNIT_ID │   TOKEN   │ CHECKSUM │ END  │
+│ 32 bits  │ 8 bits    │ 4 bits  │ 32 bits   │ 8 bits   │8 bits│
+└──────────┴───────────┴─────────┴───────────┴──────────┴──────┘
+
+Total: 92 bits (fixed size)
+
+Packet Structure - Encrypted Mode:
+----------------------------------
+┌──────────┬────────────┬─────────┬────────┬────────────────┬──────────┬──────┐
+│ PREAMBLE │ ENC_FLAG   │ UNIT_ID │ LENGTH │ ENCRYPTED_DATA │ CHECKSUM │ END  │
+│ 32 bits  │ 8 bits     │ 4 bits  │ 8 bits │ N×8 bits       │ 8 bits   │8 bits│
+└──────────┴────────────┴─────────┴────────┴────────────────┴──────────┴──────┘
+
+Encrypted data contains: salt(16) + nonce(12) + ciphertext + tag(16) bytes
+
+Field Descriptions:
+-------------------
+
+PREAMBLE (32 bits): "10101010101010101010101010101010"
+    Purpose:
+    - Allows receiver to synchronize with transmitter
+    - Known alternating pattern helps detect bit boundaries
+    - Receiver can calibrate timing before actual data arrives
+    
+    Why alternating 10101010?
+    - Maximum transitions for timing recovery
+    - Easy to recognize programmatically
+    - Distinct from random noise
+
+START_FLAG (8 bits): "11001100"
+    Purpose:
+    - Marks end of preamble, beginning of packet data
+    - Distinct pattern from preamble (not alternating)
+    - Receiver scans for this to find packet start
+
+ENCRYPTED_FLAG (8 bits): "11110000"
+    Purpose:
+    - Indicates encrypted payload follows
+    - Different from START_FLAG for auto-detection
+    - Receiver automatically switches parsing mode
+
+UNIT_ID (4 bits): 0-15
+    Purpose:
+    - Identifies transmitting device
+    - Allows multiple devices on same channel
+    - Receiver can filter for specific devices
+    
+    Example use cases:
+    - Multiple sensors reporting to one receiver
+    - Access control with multiple key fobs
+
+LENGTH (8 bits): 0-255
+    Purpose:
+    - Tells receiver how many payload bytes follow
+    - Enables variable-length messages
+    - Prevents reading garbage after message ends
+
+PAYLOAD (variable): N bytes
+    Purpose:
+    - Actual message content
+    - UTF-8 encoded text
+    - Maximum 255 bytes (limited by LENGTH field)
+
+TOKEN (32 bits): First 4 bytes of SHA-256 hash
+    Purpose:
+    - Authentication credential
+    - Proves knowledge of secret without revealing it
+    - Used in auth mode only
+
+CHECKSUM (8 bits): sum(bytes) mod 256
+    Purpose:
+    - Error detection
+    - Catches transmission errors
+    - Simple but effective
+
+END_FLAG (8 bits): "11111111"
+    Purpose:
+    - Marks end of packet
+    - Confirms packet boundary
+    - All 1s is distinctive pattern
+
+================================================================================
+8. ERROR DETECTION & CHECKSUMS
+================================================================================
+
+Why Error Detection?
+--------------------
+Transmission errors are inevitable in any communication system:
+- Acoustic noise corrupts signal
+- Speaker/microphone distortion
+- Environmental interference
+- Timing drift
+
+Error detection allows us to:
+- Identify corrupted packets
+- Request retransmission (in interactive systems)
+- At minimum, warn user of unreliable data
+
+Types of Error Detection:
+-------------------------
+1. Parity Bits: Single bit added to make total 1s even/odd
+   - Detects single bit errors
+   - Very simple but weak
+
+2. Checksums: Arithmetic sum of data bytes
+   - Detects most common errors
+   - Simple to compute
+
+3. CRC (Cyclic Redundancy Check): Polynomial division
+   - Detects burst errors
+   - Used in Ethernet, ZIP files, etc.
+
+4. Cryptographic Hashes: SHA, MD5
+   - Detects any change with high probability
+   - Computationally expensive
+
+8-bit Checksum (Used in Project):
+---------------------------------
+Algorithm:
+    checksum = (byte[0] + byte[1] + ... + byte[n]) mod 256
+
+Properties:
+    - Simple to compute (just addition)
+    - 8 bits = 256 possible values
+    - ~99.6% probability of detecting random errors
+
+Implementation:
+    def compute_checksum(data_bytes):
+        return sum(data_bytes) % 256
+
+Example:
+    Message: "Hi" = [0x48, 0x69] = [72, 105]
+    Sum: 72 + 105 = 177
+    Checksum: 177 % 256 = 177 (0xB1)
+
+Verification:
+    Receiver computes checksum of received data
+    Compares with received checksum
+    Match = packet OK
+    Mismatch = packet corrupted
+
+Limitations of 8-bit Checksum:
+------------------------------
+1. Cannot detect swapped bytes:
+   [0x48, 0x69] has same checksum as [0x69, 0x48]
+
+2. Cannot detect complementary errors:
+   If one byte increases by X and another decreases by X
+
+3. Cannot correct errors:
+   Only detection, not correction
+   For correction, need ECC (Error Correcting Codes)
+
+4. Small detection space:
+   1/256 chance of random data having correct checksum
+
+Why Not Use Stronger Error Detection?
+-------------------------------------
+For this project, 8-bit checksum is sufficient because:
+- Short messages = fewer errors
+- Acoustic environment is relatively controlled
+- Human can request retransmission
+- Simplicity is valued
+
+================================================================================
+9. CRYPTOGRAPHIC HASHING (SHA-256)
+================================================================================
+
+What is a Hash Function?
+------------------------
+A hash function maps arbitrary-size input to fixed-size output.
+
+Properties of Cryptographic Hash Functions:
+1. Deterministic: Same input always produces same output
+2. One-way: Cannot recover input from output
+3. Collision-resistant: Hard to find two inputs with same output
+4. Avalanche effect: Small input change = completely different output
+
+SHA-256 Details:
+----------------
+SHA-256 (Secure Hash Algorithm 256-bit) is part of the SHA-2 family.
+
+Input:  Any length (message, file, password, etc.)
+Output: 256 bits = 32 bytes = 64 hex characters
+
+Example:
+    Input:  "hello"
+    Output: 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+
+    Input:  "Hello" (capital H)
+    Output: 185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969
+
+Notice: Completely different outputs for similar inputs.
+
+Usage in Authentication Mode:
+-----------------------------
+The project uses SHA-256 to derive authentication tokens:
+
+1. Sender has secret password (e.g., "my_secret_key")
+2. Compute hash: SHA256("my_secret_key") = "8d969eef6ecad3c29..."
+3. Take first 8 hex characters = "8d969eef" = 32 bits
+4. Transmit these 32 bits as token
+
+Receiver:
+1. Has same secret password
+2. Computes same hash: SHA256("my_secret_key") = "8d969eef6ecad3c29..."
+3. Takes first 8 hex characters = "8d969eef"
+4. Compares with received token
+5. Match = authenticated
+
+Security Analysis:
+------------------
+Why is this secure?
+
+1. Even if attacker intercepts token "8d969eef":
+   - Cannot reverse to find "my_secret_key"
+   - Would need to guess the secret
+
+2. Brute force difficulty:
+   - 32-bit token = 4 billion possibilities
+   - Not ideal, but adequate for simple use cases
+   - Full 256-bit would be stronger but requires more bits
+
+Vulnerability:
+- Replay attack: Attacker records and retransmits token
+- Solution: Use time-based tokens (TOTP) or challenge-response
+
+Python Implementation:
+----------------------
+import hashlib
+
+def generate_token(secret):
+    hash_hex = hashlib.sha256(secret.encode()).hexdigest()
+    return hash_hex[:8]  # First 32 bits
+
+# Example
+token = generate_token("my_secret_key")
+# Result: "8d969eef"
+
+================================================================================
+10. ACOUSTIC COMMUNICATION & NEAR-ULTRASONIC TRANSMISSION
+================================================================================
+
+Sound and Hearing:
+------------------
+Sound is mechanical wave propagation through a medium (air).
+Characterized by frequency (pitch) and amplitude (loudness).
+
+Human Hearing Range:
+    Lower limit:  ~20 Hz
+    Upper limit:  ~20,000 Hz (decreases with age)
+    
+    Best sensitivity: 2,000 - 5,000 Hz (speech frequencies)
+
+Age-related hearing loss (presbycusis):
+    Age 20: Can typically hear up to 18-20 kHz
+    Age 40: Often limited to 14-16 kHz
+    Age 60: Often limited to 8-12 kHz
+
+Near-Ultrasonic Transmission:
+-----------------------------
+This project uses 17-18.5 kHz frequencies because:
+
+1. Stealth: Barely audible to most adults
+   - Teenagers and young adults may hear faint tones
+   - Older adults typically cannot hear at all
+   - "Audio steganography" - hidden in plain sight
+
+2. Available Bandwidth: Still within audio hardware range
+   - Standard speakers rated to 20 kHz
+   - Standard microphones rated to 20 kHz
+   - 44.1 kHz sample rate allows up to 22.05 kHz
+
+3. Low Interference: Most sounds are lower frequency
+   - Speech: 100-4000 Hz
+   - Music: 20-12000 Hz (most energy)
+   - Environmental noise: Broadband, but higher at low frequencies
+   - Near-ultrasonic is relatively quiet band
+
+Propagation Characteristics:
+----------------------------
+High-frequency sound has different behavior:
+
+1. Higher Attenuation:
+   - Higher frequencies lose energy faster in air
+   - Practical range: 2-10 meters (depending on equipment)
+   - Works best in same room
+
+2. More Directional:
+   - High frequencies don't bend around obstacles
+   - Line-of-sight preferred
+   - Reflections off hard surfaces can help
+
+3. Absorption:
+   - Soft materials absorb high frequencies
+   - Carpets, curtains, furniture reduce range
+   - Hard surfaces (tile, glass) reflect well
+
+Speaker/Microphone Considerations:
+----------------------------------
+Not all audio equipment handles high frequencies well:
+
+Speakers:
+- Quality varies significantly
+- Laptop/phone speakers: Often weak above 15 kHz
+- External speakers: Generally better
+- Check specifications for frequency response
+
+Microphones:
+- Similar variation in quality
+- Built-in laptop mics: Often adequate
+- External mics: Usually better
+- USB mics: Generally good response
+
+Testing recommendation:
+- Generate test tone at 17 kHz
+- Record through your equipment
+- Check if frequency is cleanly captured
+
+Environmental Factors:
+---------------------
+For best results:
+1. Quiet room (minimize competing sounds)
+2. Close proximity (2-5 meters)
+3. Clear path between speaker and microphone
+4. Hard surfaces help (reflection)
+5. Avoid wind/fan noise
+
+================================================================================
+11. NOISE RESISTANCE TECHNIQUES
+================================================================================
+
+Sources of Noise in Acoustic Communication:
+-------------------------------------------
+1. Ambient Sound: Background noise in environment
+2. Electronic Noise: Microphone/speaker hiss
+3. Interference: Other devices, appliances
+4. Multipath: Reflections causing echo
+5. Distortion: Non-linear speaker/mic response
+
+Technique 1: Bit Repetition with Majority Voting
+------------------------------------------------
+Each logical bit is transmitted N times.
+Receiver uses majority voting to determine actual value.
+
+Example (repeat=3):
+    Original bits:     0  1  0  1
+    Transmitted:       000 111 000 111
+    Received (noisy):  010 111 001 110
+    Voting result:     0   1   0   1 ✓
+
+Algorithm:
+    def majority_vote(bit_group):
+        zeros = bit_group.count('0')
+        ones = bit_group.count('1')
+        return '1' if ones > zeros else '0'
+
+Trade-offs:
+- repeat=1: No redundancy (fastest, least reliable)
+- repeat=3: 3× slower, can tolerate 1 error per bit
+- repeat=5: 5× slower, can tolerate 2 errors per bit
+- repeat=7: 7× slower, can tolerate 3 errors per bit
+
+Error tolerance: Can correct up to floor((N-1)/2) bit errors
+
+Technique 2: Energy Threshold
+-----------------------------
+Ignore samples that are too quiet (likely silence or noise).
+
+def demodulate(window, threshold=0.01):
+    energy = np.mean(window ** 2)
+    if energy < threshold:
+        return '?'  # Uncertain
+    else:
+        return analyze_frequency(window)
+
+Benefits:
+- Prevents false decodes during silence
+- Handles variable recording levels
+- Marks questionable bits for special handling
+
+Technique 3: Windowing (Hanning)
+--------------------------------
+Reduces spectral leakage in FFT, giving cleaner frequency peaks.
+Makes bit detection more accurate by reducing false frequency content.
+
+Technique 4: Robust Start Detection
+-----------------------------------
+The preamble pattern (101010...) helps receiver:
+- Lock onto bit timing
+- Compensate for recording delays
+- Find packet start reliably
+
+Searching for START_FLAG after preamble:
+- Skip first 24-32 bits (preamble region)
+- Scan for "11001100" pattern
+- This is distinct from alternating preamble
+
+Technique 5: Checksums
+----------------------
+Even if individual bits are decoded correctly, verify with checksum.
+Catches any errors that slipped through other defenses.
+
+Technique 6: AES-GCM Authentication Tag
+---------------------------------------
+For encrypted packets, the AES-GCM authentication tag provides
+additional error detection. Decryption fails if even one bit is wrong.
+
+================================================================================
+12. AES-256-GCM PAYLOAD ENCRYPTION
+================================================================================
+
+Motivation - Why Encryption?
+----------------------------
+Without encryption, the acoustic transmission is completely transparent:
+- Anyone with a receiver can decode messages
+- No privacy or confidentiality
+- Authentication tokens could be captured and replayed
+
+AES-256-GCM provides:
+- Confidentiality: Only key holders can read data
+- Integrity: Any tampering is detected
+- Authentication: Confirms data source
+
+AES (Advanced Encryption Standard):
+-----------------------------------
+AES is a symmetric block cipher adopted by U.S. government (2001).
+
+Key Sizes: 128, 192, or 256 bits (this project uses 256)
+Block Size: 128 bits (16 bytes)
+
+256-bit key provides:
+- 2²⁵⁶ possible keys ≈ 10⁷⁷
+- Brute force is computationally infeasible
+- Secure against all known attacks
+
+GCM (Galois/Counter Mode):
+--------------------------
+GCM is an operating mode for block ciphers that provides:
+
+1. Counter Mode (CTR): Encryption
+   - Turns block cipher into stream cipher
+   - Each block XORed with encrypted counter
+   - Allows parallel encryption
+
+2. GMAC: Authentication
+   - Computes authentication tag over ciphertext
+   - Uses Galois field multiplication
+   - 16-byte tag detects any modification
+
+GCM advantages:
+- Very fast (parallelizable)
+- Authenticated encryption (integrity built-in)
+- No padding required
+- Widely used (TLS, SSH, IPsec)
+
+Key Derivation with PBKDF2:
+---------------------------
+Users provide passwords, but AES needs exactly 256 bits.
+PBKDF2 (Password-Based Key Derivation Function 2) bridges this gap.
+
+PBKDF2 Parameters (this project):
+    Algorithm:  SHA-256
+    Key Length: 32 bytes (256 bits)
+    Salt:       16 random bytes
+    Iterations: 100,000
+
+Process:
+    1. Generate random 16-byte salt
+    2. Apply PBKDF2: key = PBKDF2(password, salt, 100000)
+    3. Use key for AES-256-GCM
+
+Why PBKDF2?
+- Passwords are weak (short, predictable)
+- PBKDF2 is slow by design (100,000 iterations)
+- Slows down brute-force attacks
+- Salt prevents precomputed rainbow tables
+
+Encryption Process:
+-------------------
+def encrypt_payload(plaintext, password):
+    # 1. Generate random salt and nonce
+    salt = os.urandom(16)    # 16 bytes
+    nonce = os.urandom(12)   # 12 bytes (GCM standard)
+    
+    # 2. Derive key from password
+    key = PBKDF2(password, salt, iterations=100000, length=32)
+    
+    # 3. Encrypt with AES-256-GCM
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+    # ciphertext includes 16-byte auth tag at end
+    
+    # 4. Combine for transmission
+    return salt + nonce + ciphertext
+    # Total: 16 + 12 + len(plaintext) + 16 bytes
+
+Decryption Process:
+-------------------
+def decrypt_payload(encrypted_bytes, password):
+    # 1. Extract components
+    salt = encrypted_bytes[0:16]
+    nonce = encrypted_bytes[16:28]
+    ciphertext = encrypted_bytes[28:]  # Includes auth tag
+    
+    # 2. Derive same key
+    key = PBKDF2(password, salt, iterations=100000, length=32)
+    
+    # 3. Decrypt (also verifies auth tag)
+    aesgcm = AESGCM(key)
+    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+    # Raises exception if auth tag invalid!
+    
+    return plaintext
+
+Encrypted Packet Format:
+------------------------
+The encrypted data embedded in the packet:
+
+┌─────────┬───────┬────────────┬──────────┐
+│  SALT   │ NONCE │ CIPHERTEXT │ AUTH TAG │
+│16 bytes │12 byte│ variable   │ 16 bytes │
+└─────────┴───────┴────────────┴──────────┘
+
+Overhead: 44 bytes minimum
+    "Hello" (5 bytes) → 49 bytes encrypted
+
+Transmission impact:
+    49 bytes × 8 = 392 bits
+    392 bits × 80 ms = 31.4 seconds
+
+Auto-Detection:
+---------------
+Receiver automatically detects encrypted vs. unencrypted packets
+by looking for ENCRYPTED_FLAG ("11110000") vs START_FLAG ("11001100")
+after the preamble.
+
+Security Properties Summary:
+----------------------------
+✓ Random salt: Same password → different ciphertext each time
+✓ Random nonce: Required for GCM security
+✓ Authentication tag: Detects tampering or wrong password
+✓ Key stretching: PBKDF2 makes password attacks expensive
+✓ Forward secrecy: Each message has unique salt/nonce
+
+Remaining Vulnerabilities:
+--------------------------
+✗ Replay attacks: Recorded transmission can be replayed
+   (Would need timestamp or counter for full protection)
+✗ Weak passwords: Strong encryption can't save "password123"
+✗ Key distribution: Both parties need shared password
+
+================================================================================
+13. PYTHON LIBRARIES & IMPLEMENTATION
+================================================================================
+
+NumPy (numpy):
+--------------
+Purpose: Scientific computing and array operations
+
+Used for:
+- Signal array generation and manipulation
+- FFT computation (numpy.fft)
+- Mathematical operations (sin, cos, etc.)
+- Efficient numerical computations
+
+Key functions used:
+    np.zeros(N)           # Create array of zeros
+    np.sin(phase)         # Sine function
+    np.fft.fft(signal)    # Fast Fourier Transform
+    np.abs(complex)       # Magnitude of complex numbers
+    np.hanning(N)         # Hanning window
+    np.argmin(array)      # Index of minimum value
+
+Installation: pip install numpy
+
+SciPy (scipy):
+--------------
+Purpose: Scientific and technical computing
+
+Used for:
+- WAV file reading/writing
+
+Key functions used:
+    scipy.io.wavfile.read(filename)     # Read WAV file
+    scipy.io.wavfile.write(...)         # Write WAV file
+
+Installation: pip install scipy
+
+SoundDevice (sounddevice):
+--------------------------
+Purpose: Real-time audio I/O
+
+Used for:
+- Recording from microphone
+- Playing through speakers
+
+Key functions used:
+    sd.rec(frames, samplerate, channels)  # Record audio
+    sd.play(signal, samplerate)           # Play audio
+    sd.wait()                             # Wait for completion
+    sd.query_devices()                    # List audio devices
+
+Installation: pip install sounddevice
+
+Note: Requires PortAudio library on some systems
+
+hashlib (Standard Library):
+---------------------------
+Purpose: Cryptographic hash algorithms
+
+Used for:
+- SHA-256 hashing for authentication tokens
+
+Key functions used:
+    hashlib.sha256(data).hexdigest()  # Compute SHA-256 hash
+
+No installation needed (built into Python)
+
+cryptography:
+-------------
+Purpose: Modern cryptographic recipes
+
+Used for:
+- AES-256-GCM encryption/decryption
+- PBKDF2 key derivation
+
+Key classes/functions used:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    
+    AESGCM(key).encrypt(nonce, data, aad)
+    AESGCM(key).decrypt(nonce, data, aad)
+    PBKDF2HMAC(...).derive(password)
+
+Installation: pip install cryptography
+
+argparse (Standard Library):
+----------------------------
+Purpose: Command-line argument parsing
+
+Used for:
+- Parsing command-line options
+- Generating help text
+- Input validation
+
+No installation needed (built into Python)
+
+os (Standard Library):
+----------------------
+Purpose: Operating system interfaces
+
+Used for:
+- Generating cryptographically secure random bytes
+
+Key functions used:
+    os.urandom(16)  # Generate 16 random bytes
+
+No installation needed (built into Python)
+
+================================================================================
+14. KEY FORMULAS & CALCULATIONS
+================================================================================
+
+Signal Generation:
+------------------
+Continuous-phase sine wave:
+    phase[n] = phase[n-1] + 2π × f / fs
+    signal[n] = sin(phase[n])
+
+Sampling:
+---------
+Samples per bit:
+    N = bit_duration × sample_rate
+    N = 0.08 × 44100 = 3528
+
+Nyquist criterion:
+    fs ≥ 2 × f_max
+    44100 ≥ 2 × 18500 ✓
+
+FFT:
+----
+Frequency resolution:
+    Δf = fs / N = 44100 / 3528 ≈ 12.5 Hz
+
+Frequency bin index:
+    k = round(f × N / fs)
+    k_f0 = round(17000 × 3528 / 44100) = 1360
+    k_f1 = round(18500 × 3528 / 44100) = 1480
+
+Data Transmission:
+------------------
+Bit rate:
+    R = 1 / T_bit = 1 / 0.08 = 12.5 bps
+
+Transmission time:
+    T = num_bits × bit_duration
+
+Example calculations:
+    "Hello" (5 bytes):
+        Packet bits = 32 + 8 + 4 + 8 + 40 + 8 + 8 = 108 bits
+        Time = 108 × 0.08 = 8.64 seconds
+    
+    Encrypted "Hello" (49 bytes encrypted):
+        Packet bits = 32 + 8 + 4 + 8 + 392 + 8 + 8 = 460 bits
+        Time = 460 × 0.08 = 36.8 seconds
+
+Checksums:
+----------
+8-bit checksum:
+    checksum = (Σ bytes) mod 256
+
+Error Detection:
+----------------
+Majority voting error correction:
+    Can correct up to floor((N-1)/2) errors with N repetitions
+
+Energy threshold:
+    energy = mean(x²) = (1/N) × Σ(x[n]²)
+
+================================================================================
+15. SECURITY ANALYSIS
+================================================================================
+
+Threat Model:
+-------------
+Potential attackers:
+1. Passive Eavesdropper: Listens to transmission
+2. Active Attacker: Intercepts and modifies
+3. Impersonator: Pretends to be legitimate sender
+
+Security Measures by Mode:
+--------------------------
+
+Data Mode (Unencrypted):
+    Confidentiality:  ✗ Anyone can decode
+    Integrity:        ~ Checksum detects errors but not malicious changes
+    Authentication:   ✗ No sender verification
+    
+    Suitable for: Non-sensitive data, demos, testing
+
+Auth Mode:
+    Confidentiality:  N/A (no data payload)
+    Integrity:        ~ Checksum + token verification
+    Authentication:   ~ Token proves knowledge of secret
+    
+    Vulnerabilities:
+    - Replay attack: Recorded token works again
+    - Brute force: 32-bit token = 4 billion possibilities
+    
+    Suitable for: Simple access control, low-security applications
+
+Encrypted Mode:
+    Confidentiality:  ✓ AES-256 encryption
+    Integrity:        ✓ GCM authentication tag
+    Authentication:   ~ Implicit (only key holders can decrypt)
+    
+    Vulnerabilities:
+    - Replay attack: Still possible
+    - Weak passwords: Encryption can't fix bad passwords
+    
+    Suitable for: Sensitive data transmission
+
+Recommendations for Security-Critical Use:
+------------------------------------------
+1. Use strong passwords: 16+ characters, random
+2. Add timestamps: Reject old packets (prevents replay)
+3. Add sequence numbers: Detect missing/reordered packets
+4. Rotate keys: Change passwords periodically
+5. Limit range: Physical security (attacker must be nearby)
+
+================================================================================
+16. REFERENCES & FURTHER READING
+================================================================================
+
+Books:
+------
+1. "Digital Communications" - Proakis & Salehi
+   Comprehensive textbook on digital communication theory
+
+2. "Understanding Digital Signal Processing" - Richard Lyons
+   Practical guide to DSP concepts
+
+3. "Cryptography Engineering" - Ferguson, Schneier, Kohno
+   Practical cryptography implementation
+
+Online Resources:
+-----------------
+4. NumPy Documentation: https://numpy.org/doc/
+5. SciPy Documentation: https://docs.scipy.org/
+6. Python cryptography Library: https://cryptography.io/
+7. NIST FIPS 180-4 (SHA-256): https://csrc.nist.gov/publications/detail/fips/180/4/final
+8. NIST SP 800-38D (GCM): https://csrc.nist.gov/publications/detail/sp/800-38d/final
+
+Research Papers:
+----------------
+9. Audio Steganography Techniques - IEEE Xplore
+10. Near-Ultrasonic Communication Systems - ACM Digital Library
+
+Standards:
+----------
+11. WAV File Format: Microsoft RIFF specification
+12. AES: NIST FIPS 197
+13. PBKDF2: RFC 8018
+
+================================================================================
+                              END OF DOCUMENT
+================================================================================
+
+Document Version: 2.0
+Last Updated: January 2026
+Total Topics: 16 sections
+Encryption Support: AES-256-GCM with PBKDF2 key derivation

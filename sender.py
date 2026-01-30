@@ -8,8 +8,60 @@ Packet Structure: [START:8][UNIT_ID:4][LENGTH:8][PAYLOAD:N*8][CHECKSUM:8][END:8]
 
 import argparse
 import hashlib
+import os
+import base64
 import numpy as np
 from scipy.io.wavfile import write
+
+# Optional encryption support
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
+
+def derive_key(password: str, salt: bytes = None) -> tuple:
+    """
+    Derive a 256-bit AES key from a password using PBKDF2.
+    Returns (key, salt) - salt is generated if not provided.
+    """
+    if salt is None:
+        salt = os.urandom(16)
+    
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,  # 256-bit key
+        salt=salt,
+        iterations=100000,
+    )
+    key = kdf.derive(password.encode())
+    return key, salt
+
+
+def encrypt_payload(plaintext: str, password: str) -> bytes:
+    """
+    Encrypt plaintext using AES-256-GCM.
+    
+    Output format: salt (16 bytes) + nonce (12 bytes) + ciphertext + tag (16 bytes)
+    """
+    if not HAS_CRYPTO:
+        raise ImportError("cryptography library not installed. Run: pip install cryptography")
+    
+    # Derive key from password
+    key, salt = derive_key(password)
+    
+    # Generate random nonce
+    nonce = os.urandom(12)
+    
+    # Encrypt with AES-GCM
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+    
+    # Combine: salt + nonce + ciphertext (includes auth tag)
+    return salt + nonce + ciphertext
 
 # Default parameters
 DEFAULT_F0 = 17000       # Frequency for bit '0' (Hz)
@@ -113,6 +165,35 @@ def build_auth_packet(unit_id: int, secret: str) -> str:
     return packet
 
 
+def build_encrypted_packet(unit_id: int, encrypted_bytes: bytes) -> str:
+    """
+    Build encrypted data packet.
+    
+    Structure: [PREAMBLE:32][ENCRYPTED_FLAG:8][UNIT_ID:4][LENGTH:8][ENCRYPTED_DATA:N*8][CHECKSUM:8][END:8]
+    
+    Uses ENCRYPTED_FLAG (11110000) instead of START_FLAG to indicate encrypted payload.
+    """
+    ENCRYPTED_FLAG = "11110000"  # Different from START_FLAG to mark encrypted packets
+    
+    # Unit ID: 4 bits (0-15)
+    unit_bits = format(unit_id & 0xF, '04b')
+    
+    # Encrypted payload as bits
+    payload_bits = ''.join(format(b, '08b') for b in encrypted_bytes)
+    
+    # Length: 8 bits (0-255 bytes)
+    length_bits = format(len(encrypted_bytes) & 0xFF, '08b')
+    
+    # Checksum: 8-bit sum of encrypted bytes
+    checksum = compute_checksum(encrypted_bytes)
+    checksum_bits = format(checksum, '08b')
+    
+    # Assemble packet (preamble + encrypted packet)
+    packet = PREAMBLE + ENCRYPTED_FLAG + unit_bits + length_bits + payload_bits + checksum_bits + END_FLAG
+    
+    return packet
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="BFSK Acoustic Sender - Encode data into FSK audio",
@@ -121,6 +202,9 @@ def main():
 Examples:
   # Send custom message
   python sender.py --unit-id 1 --data "Hello"
+  
+  # Send encrypted message
+  python sender.py --unit-id 1 --data "Secret message" --encrypt --key "mypassword"
   
   # Send authentication token
   python sender.py --unit-id 1 --secret "my_secret" --auth-mode
@@ -138,6 +222,10 @@ Examples:
                         help='Secret passphrase for auth token')
     parser.add_argument('--auth-mode', action='store_true',
                         help='Use 32-bit auth token mode instead of data mode')
+    parser.add_argument('--encrypt', action='store_true',
+                        help='Encrypt payload with AES-256-GCM (requires --key)')
+    parser.add_argument('--key', type=str, default=None,
+                        help='Encryption key/password for AES encryption')
     parser.add_argument('--output', type=str, default='packet.wav',
                         help='Output WAV file (default: packet.wav)')
     parser.add_argument('--f0', type=float, default=DEFAULT_F0,
@@ -163,11 +251,33 @@ Examples:
     else:
         if not args.data:
             parser.error("--data is required (or use --auth-mode with --secret)")
-        if len(args.data.encode('utf-8')) > 255:
-            parser.error("Data too long (max 255 bytes)")
-        packet = build_packet(args.unit_id, args.data)
-        print(f"[DATA MODE] Unit ID: {args.unit_id}")
-        print(f"[DATA MODE] Payload: {args.data}")
+        
+        # Handle encryption
+        if args.encrypt:
+            if not args.key:
+                parser.error("--key is required when using --encrypt")
+            if not HAS_CRYPTO:
+                parser.error("cryptography library not installed. Run: pip install cryptography")
+            
+            # Encrypt the payload
+            encrypted_bytes = encrypt_payload(args.data, args.key)
+            
+            # Check encrypted size
+            if len(encrypted_bytes) > 255:
+                parser.error(f"Encrypted data too long ({len(encrypted_bytes)} bytes, max 255)")
+            
+            # Build packet with encrypted bytes (use hex encoding for transmission)
+            payload_hex = encrypted_bytes.hex()
+            packet = build_encrypted_packet(args.unit_id, encrypted_bytes)
+            print(f"[ENCRYPTED MODE] Unit ID: {args.unit_id}")
+            print(f"[ENCRYPTED MODE] Original: {args.data}")
+            print(f"[ENCRYPTED MODE] Encrypted size: {len(encrypted_bytes)} bytes")
+        else:
+            if len(args.data.encode('utf-8')) > 255:
+                parser.error("Data too long (max 255 bytes)")
+            packet = build_packet(args.unit_id, args.data)
+            print(f"[DATA MODE] Unit ID: {args.unit_id}")
+            print(f"[DATA MODE] Payload: {args.data}")
     
     # Apply bit repetition if requested
     if args.repeat > 1:

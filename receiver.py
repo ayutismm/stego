@@ -3,9 +3,10 @@
 BFSK Acoustic Receiver
 Demodulates FSK audio to recover transmitted data/authentication tokens.
 
-Supports two packet formats:
+Supports three packet formats:
 - Data mode: [START:8][UNIT_ID:4][LENGTH:8][PAYLOAD:N*8][CHECKSUM:8][END:8]
 - Auth mode: [START:8][UNIT_ID:4][TOKEN:32][CHECKSUM:8][END:8]
+- Encrypted mode: [ENCRYPTED_FLAG:8][UNIT_ID:4][LENGTH:8][ENCRYPTED_DATA:N*8][CHECKSUM:8][END:8]
 """
 
 import argparse
@@ -18,6 +19,15 @@ try:
 except ImportError:
     HAS_SOUNDDEVICE = False
 
+# Optional encryption support
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
 from scipy.io.wavfile import read as wav_read
 
 # Default parameters (must match sender)
@@ -29,7 +39,45 @@ DEFAULT_REPEAT = 1
 DEFAULT_ENERGY_THRESHOLD = 0.01  # Minimum signal energy to decode
 
 START_FLAG = "11001100"  # Distinct from alternating preamble
+ENCRYPTED_FLAG = "11110000"  # Marks encrypted packets
 END_FLAG = "11111111"
+
+
+def derive_key(password: str, salt: bytes) -> bytes:
+    """
+    Derive a 256-bit AES key from a password using PBKDF2.
+    """
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,  # 256-bit key
+        salt=salt,
+        iterations=100000,
+    )
+    return kdf.derive(password.encode())
+
+
+def decrypt_payload(encrypted_bytes: bytes, password: str) -> str:
+    """
+    Decrypt AES-256-GCM encrypted payload.
+    
+    Input format: salt (16 bytes) + nonce (12 bytes) + ciphertext + tag (16 bytes)
+    """
+    if not HAS_CRYPTO:
+        raise ImportError("cryptography library not installed. Run: pip install cryptography")
+    
+    # Extract components
+    salt = encrypted_bytes[:16]
+    nonce = encrypted_bytes[16:28]
+    ciphertext = encrypted_bytes[28:]
+    
+    # Derive key from password
+    key = derive_key(password, salt)
+    
+    # Decrypt with AES-GCM
+    aesgcm = AESGCM(key)
+    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+    
+    return plaintext.decode('utf-8')
 
 
 def compute_checksum(data_bytes: bytes) -> int:
@@ -130,16 +178,32 @@ def find_packet_start(bitstream: str, preamble_bits: int = 32) -> int:
     The preamble is 32 alternating bits (10101010...) which also contains
     the START pattern. We search for START after the preamble region,
     or fall back to the last occurrence if multiple matches exist.
-    """
-    # First, try to find START after preamble
-    search_start = max(0, preamble_bits - 8)  # Allow some tolerance
-    idx = bitstream.find(START_FLAG, search_start)
     
-    if idx >= 0:
-        return idx
+    Returns: (index, is_encrypted) tuple
+    """
+    # First, try to find ENCRYPTED_FLAG after preamble
+    search_start = max(0, preamble_bits - 8)  # Allow some tolerance
+    encrypted_idx = bitstream.find(ENCRYPTED_FLAG, search_start)
+    start_idx = bitstream.find(START_FLAG, search_start)
+    
+    # Return whichever comes first (if both found)
+    if encrypted_idx >= 0 and start_idx >= 0:
+        if encrypted_idx < start_idx:
+            return encrypted_idx, True
+        else:
+            return start_idx, False
+    elif encrypted_idx >= 0:
+        return encrypted_idx, True
+    elif start_idx >= 0:
+        return start_idx, False
     
     # Fallback: find any occurrence
-    return bitstream.find(START_FLAG)
+    encrypted_idx = bitstream.find(ENCRYPTED_FLAG)
+    start_idx = bitstream.find(START_FLAG)
+    
+    if encrypted_idx >= 0:
+        return encrypted_idx, True
+    return start_idx, False
 
 
 
@@ -249,6 +313,69 @@ def parse_auth_packet(bitstream: str, start_idx: int, expected_secret: str = Non
     }
 
 
+def parse_encrypted_packet(bitstream: str, start_idx: int, decryption_key: str = None) -> dict:
+    """
+    Parse encrypted mode packet.
+    
+    Format: [ENCRYPTED_FLAG:8][UNIT_ID:4][LENGTH:8][ENCRYPTED_DATA:N*8][CHECKSUM:8][END:8]
+    """
+    pos = start_idx + 8  # Skip ENCRYPTED_FLAG
+    
+    # Unit ID: 4 bits
+    unit_id = int(bitstream[pos:pos+4], 2)
+    pos += 4
+    
+    # Length: 8 bits
+    length = int(bitstream[pos:pos+8], 2)
+    pos += 8
+    
+    # Encrypted payload: length * 8 bits
+    payload_bits = bitstream[pos:pos+(length*8)]
+    pos += length * 8
+    
+    # Checksum: 8 bits
+    checksum_received = int(bitstream[pos:pos+8], 2)
+    pos += 8
+    
+    # End flag: 8 bits
+    end_flag = bitstream[pos:pos+8]
+    
+    # Convert payload to bytes
+    encrypted_bytes = bits_to_bytes(payload_bits)
+    
+    # Verify checksum
+    computed_checksum = compute_checksum(encrypted_bytes)
+    checksum_valid = (checksum_received == computed_checksum)
+    
+    # Verify end flag
+    end_valid = (end_flag == END_FLAG)
+    
+    # Attempt decryption if key provided
+    decrypted_text = None
+    decryption_error = None
+    if decryption_key and checksum_valid and end_valid:
+        if not HAS_CRYPTO:
+            decryption_error = "cryptography library not installed"
+        else:
+            try:
+                decrypted_text = decrypt_payload(encrypted_bytes, decryption_key)
+            except Exception as e:
+                decryption_error = str(e)
+    
+    return {
+        'mode': 'encrypted',
+        'unit_id': unit_id,
+        'encrypted_bytes': encrypted_bytes,
+        'encrypted_hex': encrypted_bytes.hex(),
+        'decrypted_text': decrypted_text,
+        'decryption_error': decryption_error,
+        'checksum_received': checksum_received,
+        'checksum_computed': computed_checksum,
+        'checksum_valid': checksum_valid,
+        'end_valid': end_valid,
+        'valid': checksum_valid and end_valid
+    }
+
 def record_audio(duration: float, fs: int) -> np.ndarray:
     """Record audio from microphone."""
     if not HAS_SOUNDDEVICE:
@@ -290,6 +417,9 @@ Examples:
   # Decode from WAV file (data mode)
   python receiver.py --input packet.wav
   
+  # Decode encrypted packet
+  python receiver.py --input packet.wav --key "mypassword"
+  
   # Decode from WAV file (auth mode with verification)
   python receiver.py --input packet.wav --auth-mode --secret "my_secret"
   
@@ -306,6 +436,8 @@ Examples:
                         help='Parse as 32-bit auth token packet')
     parser.add_argument('--secret', type=str, default=None,
                         help='Expected secret for auth verification')
+    parser.add_argument('--key', type=str, default=None,
+                        help='Decryption key/password for AES encrypted packets')
     parser.add_argument('--f0', type=float, default=DEFAULT_F0,
                         help=f'Frequency for bit 0 (default: {DEFAULT_F0} Hz)')
     parser.add_argument('--f1', type=float, default=DEFAULT_F1,
@@ -350,16 +482,21 @@ Examples:
     
     # Find packet start (preamble is 32 bits, scaled by repeat factor)
     preamble_bits = 32 // args.repeat if args.repeat > 1 else 32
-    start_idx = find_packet_start(bitstream, preamble_bits)
+    start_idx, is_encrypted = find_packet_start(bitstream, preamble_bits)
     
     if start_idx < 0:
         print("[ERROR] START flag not found in signal")
         return
     
-    print(f"[INFO] START flag found at bit {start_idx}")
+    if is_encrypted:
+        print(f"[INFO] ENCRYPTED packet detected at bit {start_idx}")
+    else:
+        print(f"[INFO] START flag found at bit {start_idx}")
     
-    # Parse packet
-    if args.auth_mode:
+    # Parse packet based on type detected
+    if is_encrypted:
+        result = parse_encrypted_packet(bitstream, start_idx, args.key)
+    elif args.auth_mode:
         result = parse_auth_packet(bitstream, start_idx, args.secret)
     else:
         result = parse_data_packet(bitstream, start_idx)
@@ -373,6 +510,14 @@ Examples:
     
     if result['mode'] == 'data':
         print(f"Payload: {result['payload']}")
+    elif result['mode'] == 'encrypted':
+        print(f"Encrypted Data: {result['encrypted_hex'][:64]}...")
+        if result['decrypted_text']:
+            print(f"🔓 Decrypted: {result['decrypted_text']}")
+        elif result['decryption_error']:
+            print(f"🔒 Decryption Failed: {result['decryption_error']}")
+        elif not args.key:
+            print("🔒 Encrypted (use --key to decrypt)")
     else:
         print(f"Token: {result['token']}")
     
@@ -388,6 +533,8 @@ Examples:
                 print("✓ ACCESS GRANTED")
             else:
                 print("✗ ACCESS DENIED (token mismatch)")
+        elif result['mode'] == 'encrypted' and result['decrypted_text']:
+            print("✓ PACKET VALID & DECRYPTED")
         else:
             print("✓ PACKET VALID")
     else:
