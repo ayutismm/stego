@@ -9,6 +9,8 @@ from tkinter import ttk, messagebox, filedialog
 import threading
 import numpy as np
 import hashlib
+import collections
+import time
 
 try:
     import sounddevice as sd
@@ -46,7 +48,7 @@ END_FLAG = "11111111"
 class BFSKApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("BFSK Acoustic Communication")
+        self.root.title("DHWANI - Digital High-frequency Wave-based Authentication & Network Interface")
         self.root.geometry("900x800")
         self.root.resizable(True, True)
         
@@ -58,6 +60,11 @@ class BFSKApp:
         self.is_recording = False
         self.recorded_signal = None
         
+        # Live Mode state
+        self.is_live = False
+        self.live_buffer = collections.deque(maxlen=44100 * 10)  # 10 sec buffer
+        self.live_stream = None
+        
         self.create_widgets()
         self.refresh_devices()
     
@@ -67,7 +74,7 @@ class BFSKApp:
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Title
-        title = ttk.Label(main_frame, text="BFSK Acoustic Communication", style='Title.TLabel')
+        title = ttk.Label(main_frame, text="DHWANI", style='Title.TLabel')
         title.pack(pady=(0, 15))
         
         # ===== DEVICE SELECTION =====
@@ -161,19 +168,24 @@ class BFSKApp:
         ttk.Label(receiver_frame, text="Record Duration (s):").grid(row=0, column=0, sticky=tk.W, padx=5)
         self.duration_var = tk.StringVar(value="6")
         ttk.Entry(receiver_frame, textvariable=self.duration_var, width=10).grid(row=0, column=1, sticky=tk.W, padx=5)
+        ttk.Button(receiver_frame, text="Auto Sync", command=self.sync_duration).grid(row=0, column=2, padx=5)
         
         # Auth secret for verification
-        ttk.Label(receiver_frame, text="Expected Secret (auth):").grid(row=0, column=2, sticky=tk.W, padx=5)
+        ttk.Label(receiver_frame, text="Expected Secret (auth):").grid(row=1, column=0, sticky=tk.W, padx=5)
         self.rx_secret_var = tk.StringVar()
-        ttk.Entry(receiver_frame, textvariable=self.rx_secret_var, width=20).grid(row=0, column=3, sticky=tk.W, padx=5)
+        ttk.Entry(receiver_frame, textvariable=self.rx_secret_var, width=20).grid(row=1, column=1, columnspan=2, sticky=tk.W, padx=5)
         
         # Bandpass Filter Toggle
         self.use_filter_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(receiver_frame, text="Enable Bandpass Filter", variable=self.use_filter_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5)
+        ttk.Checkbutton(receiver_frame, text="Enable Bandpass Filter", variable=self.use_filter_var).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=5)
+        
+        # Live Mode Toggle
+        self.live_btn = ttk.Button(receiver_frame, text="Start Live Mode", command=self.toggle_live_mode)
+        self.live_btn.grid(row=2, column=2, padx=5)
         
         # Buttons
         rx_btn_frame = ttk.Frame(receiver_frame)
-        rx_btn_frame.grid(row=1, column=0, columnspan=4, pady=10)
+        rx_btn_frame.grid(row=3, column=0, columnspan=4, pady=10)
         
         self.record_btn = ttk.Button(rx_btn_frame, text="Start Recording", command=self.toggle_recording)
         self.record_btn.pack(side=tk.LEFT, padx=5)
@@ -396,7 +408,36 @@ class BFSKApp:
             # self.log(f"[DEBUG] Calc error: {e}") # Optional debug
             pass
 
+    def sync_duration(self):
+        """Auto-sync receiver duration based on sender parameters."""
+        try:
+            bit_duration = float(self.bit_duration_var.get())
+            repeat = int(self.repeat_var.get())
+            data = self.data_var.get()
+            is_auth = self.mode_var.get() == "auth"
+            
+            # Calculate packet length
+            base_overhead_bits = 32 + 8 + 4 + 8 + 8  # Preamble, Start, Unit, Checksum, End
+            
+            if is_auth:
+                payload_bits_count = 32
+            else:
+                payload_bytes = len(data.encode('utf-8')) if data else 10  # Default 10 chars if empty
+                payload_bits_count = 8 + (payload_bytes * 8)
+            
+            total_bits = (base_overhead_bits + payload_bits_count) * repeat
+            signal_duration = total_bits * bit_duration
+            
+            # Add buffer: 2 seconds before + 1 second after
+            rec_duration = signal_duration + 3.0
+            
+            self.duration_var.set(f"{rec_duration:.1f}")
+            self.log(f"[INFO] Recording duration synced to {rec_duration:.1f}s (signal: {signal_duration:.2f}s + 3s buffer)")
+            
+        except Exception as e:
+            self.log(f"[ERROR] Sync failed: {e}")
     
+
     def generate_wav(self):
         """Generate and save WAV file."""
         try:
@@ -760,17 +801,205 @@ class BFSKApp:
                 self.log("=" * 40)
                 self.log(f"Unit ID: {unit_id}")
                 self.log(f"Payload: {payload_text}")
-                self.log(f"Checksum: rx={checksum_rx}, calc={checksum_calc}")
-                self.log(f"End Flag Valid: {end_flag == END_FLAG}")
+                self.log(f"Checksum: rx={checksum_rx}, calc={checksum_calc}, match={checksum_rx == checksum_calc}")
+                self.log(f"End Flag: rx={end_flag}, expected={END_FLAG}, match={end_flag == END_FLAG}")
                 
                 if checksum_rx == checksum_calc and end_flag == END_FLAG:
                     self.log("✓ PACKET VALID")
                 else:
-                    self.log("✗ PACKET INVALID")
+                    if checksum_rx != checksum_calc:
+                        self.log("✗ CHECKSUM MISMATCH (possible bit errors)")
+                    if end_flag != END_FLAG:
+                        self.log("✗ END FLAG MISMATCH (signal may be truncated)")
                     
         except Exception as e:
             self.log(f"[ERROR] {e}")
 
+    def toggle_live_mode(self):
+        """Start/Stop live listening mode."""
+        if not HAS_SOUNDDEVICE:
+            messagebox.showerror("Error", "sounddevice not installed")
+            return
+        
+        if self.is_live:
+            self.stop_live_mode()
+        else:
+            self.start_live_mode()
+
+    def start_live_mode(self):
+        """Start continuous listening."""
+        self.is_live = True
+        self.live_btn.config(text="Stop Live Mode")
+        self.record_btn.config(state='disabled')
+        self.log("[LIVE] Started - listening for packets...")
+        
+        self.live_buffer.clear()
+        
+        try:
+            params = self.get_params()
+            device_idx = self.get_device_index(self.input_device_var.get())
+            
+            def audio_callback(indata, frames, time_info, status):
+                if status:
+                    print(status)
+                self.live_buffer.extend(indata[:, 0])
+            
+            self.live_stream = sd.InputStream(
+                samplerate=params['fs'],
+                channels=1,
+                device=device_idx,
+                callback=audio_callback
+            )
+            self.live_stream.start()
+            
+            # Start processing thread
+            threading.Thread(target=self.process_live_stream, daemon=True).start()
+            
+        except Exception as e:
+            self.log(f"[ERROR] Live init failed: {e}")
+            self.stop_live_mode()
+
+    def stop_live_mode(self):
+        """Stop continuous listening."""
+        self.is_live = False
+        self.live_btn.config(text="Start Live Mode")
+        self.record_btn.config(state='normal')
+        
+        if self.live_stream:
+            self.live_stream.stop()
+            self.live_stream.close()
+            self.live_stream = None
+        
+        self.log("[LIVE] Stopped")
+
+    def process_live_stream(self):
+        """Process audio buffer periodically to detect packets."""
+        while self.is_live:
+            time.sleep(0.5)  # Check every 0.5 seconds
+            
+            if len(self.live_buffer) < 44100:  # Need at least 1 second of audio
+                continue
+            
+            try:
+                # Copy buffer for processing
+                signal = np.array(self.live_buffer)
+                params = self.get_params()
+                
+                # Apply bandpass filter if enabled
+                if self.use_filter_var.get():
+                    try:
+                        low = min(params['f0'], params['f1']) - 500
+                        high = max(params['f0'], params['f1']) + 500
+                        nyq = 0.5 * params['fs']
+                        b, a = butter(5, [max(0.001, low/nyq), min(0.999, high/nyq)], btype='band')
+                        signal = filtfilt(b, a, signal)
+                    except:
+                        pass
+                
+                # Demodulate
+                bitstream = self.demodulate_fsk(signal, params)
+                
+                # Apply majority voting
+                repeat = int(self.repeat_var.get())
+                if repeat > 1:
+                    voted = []
+                    for i in range(0, len(bitstream), repeat):
+                        group = bitstream[i:i+repeat]
+                        ones = group.count('1')
+                        zeros = group.count('0')
+                        voted.append('1' if ones > zeros else '0')
+                    bitstream = ''.join(voted)
+                
+                # Look for START_FLAG
+                start_idx = bitstream.find(START_FLAG)
+                if start_idx >= 0:
+                    # Found a potential packet - try to decode
+                    success = self._try_decode_live(bitstream, start_idx, params)
+                    if success:
+                        self.live_buffer.clear()  # Clear buffer after successful decode
+                        
+            except Exception as e:
+                pass  # Silently continue on errors
+            
+            # Limit buffer size
+            if len(self.live_buffer) > params['fs'] * 15:
+                while len(self.live_buffer) > params['fs'] * 5:
+                    self.live_buffer.popleft()
+
+    def _try_decode_live(self, bitstream, start_idx, params):
+        """Try to decode a packet from live stream."""
+        try:
+            pos = start_idx + 8
+            if pos + 4 > len(bitstream):
+                return False
+            
+            unit_id = int(bitstream[pos:pos+4], 2)
+            pos += 4
+            
+            rx_secret = self.rx_secret_var.get()
+            
+            if rx_secret:
+                # Auth mode
+                if pos + 32 + 8 + 8 > len(bitstream):
+                    return False
+                
+                token_bits = bitstream[pos:pos+32]
+                token_int = int(token_bits, 2)
+                token_hex = format(token_int, '08x')
+                pos += 32
+                
+                checksum_rx = int(bitstream[pos:pos+8], 2)
+                pos += 8
+                end_flag = bitstream[pos:pos+8]
+                
+                token_bytes = token_int.to_bytes(4, 'big')
+                checksum_calc = sum(token_bytes) % 256
+                expected_token = hashlib.sha256(rx_secret.encode()).hexdigest()[:8]
+                
+                if checksum_rx == checksum_calc and end_flag == END_FLAG:
+                    if token_hex == expected_token:
+                        self.root.after(0, lambda: self.log(f"[LIVE] ✓ AUTH OK (Unit {unit_id})"))
+                    else:
+                        self.root.after(0, lambda: self.log(f"[LIVE] ✗ AUTH FAIL (Unit {unit_id})"))
+                    return True
+            else:
+                # Data mode
+                if pos + 8 > len(bitstream):
+                    return False
+                
+                length = int(bitstream[pos:pos+8], 2)
+                pos += 8
+                
+                if length == 0 or length > 255:
+                    return False
+                
+                if pos + (length * 8) + 16 > len(bitstream):
+                    return False
+                
+                payload_bits = bitstream[pos:pos+(length*8)]
+                pos += length * 8
+                
+                checksum_rx = int(bitstream[pos:pos+8], 2)
+                pos += 8
+                end_flag = bitstream[pos:pos+8]
+                
+                payload_bytes = bytes([int(payload_bits[i:i+8], 2) for i in range(0, len(payload_bits), 8)])
+                
+                try:
+                    payload_text = payload_bytes.decode('utf-8')
+                except:
+                    return False
+                
+                checksum_calc = sum(payload_bytes) % 256
+                
+                if checksum_rx == checksum_calc and end_flag == END_FLAG:
+                    self.root.after(0, lambda t=payload_text, u=unit_id: self.log(f"[LIVE] ✓ MSG from {u}: {t}"))
+                    return True
+                    
+        except:
+            pass
+        
+        return False
 
 def main():
     root = tk.Tk()
